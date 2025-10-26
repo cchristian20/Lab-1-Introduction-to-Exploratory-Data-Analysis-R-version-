@@ -1,4 +1,5 @@
 # CYBR 520 – Lab 1: Exploratory Data Analysis (R)
+# Cierra Christian, Megan Geer, Samantha Easton, and Gary Mullings
 
 This is a step-by-step guide that anyone can follow to reproduce the lab from a clean machine.  
 You’ll (1) set up R/RStudio, (2) analyze the built-in **Iris** dataset, and (3) create plots and visualizations for your report.
