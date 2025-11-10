@@ -1,308 +1,306 @@
-# CYBR 520 – Lab 1: Exploratory Data Analysis (R)
-# Cierra Christian, Megan Geer, Samantha Easton, and Gary Mullings
-
-This is a step-by-step guide that anyone can follow to reproduce the lab from a clean machine.  
-You’ll (1) set up R/RStudio, (2) analyze the built-in **Iris** dataset, and (3) create plots and visualizations for your report.
-
+---
+---
 ---
 
-## 🌸 Dataset Overview
+# 🧠 CYBR 520 – Lab 3: Supervised Machine Learning (R Version)
 
-**Dataset:** Iris  
-**Topics:** Summary statistics, data visualization, variable relationships, feature distributions, and outlier detection  
-**R Packages:** `tidyverse`, `tidymodels`, `GGally`  
+**Authors:** Cierra Christian, Megan Geer, and Gary Mullings\
+**Course:** Data Analytics for Cybersecurity (CYBR 520)\
+**Institution:** West Virginia University\
+**Tools and Packages:** R, RStudio, tidymodels, kknn, kernlab, ranger, ggplot2, pROC, vip
 
-### Background
+------------------------------------------------------------------------
 
-The **Iris dataset** is a classic example used in R for machine learning and statistical analysis.  
-Most, if not all, flowers have a **sepal** and a **petal**. The **sepal** (Figure 1) functions as a protector for the flower and supports the petals when it blooms.
+## 🎯 Overview
 
-![Figure 1 – Petal vs Sepal](images/c41f3ed9-f1b1-4bc8-9b44-a3fd24cda6aa.png)
+This lab explores **Supervised Machine Learning** using the **Spambase dataset** to classify emails as spam (1) or nonspam (0).\
+We implemented and compared three models — **k-Nearest Neighbors (k-NN)**, **Support Vector Machines (SVM)**, and **Random Forest (RF)** — to determine which algorithm provides the best accuracy, recall, precision, and ROC-AUC for spam detection.
 
-The Iris dataset contains measurements (in cm) of **petal length and width**, and **sepal length and width** for three species of iris flowers:  
-**Iris versicolor**, **Iris setosa**, and **Iris virginica** (Figure 2).  
-Each species includes **50 observations**, for a total of **150 rows**.  
-Each record also includes a class label identifying the species (“versicolor”, “setosa”, or “virginica”).
+------------------------------------------------------------------------
 
-![Figure 2 – Iris Species](images/1c98d6d7-f6b4-4915-a639-80c186bc4a95.png)
+## 🧩 Dataset: Spambase
 
----
+-   Developed by Hewlett-Packard Labs (1999)\
+-   4601 total email samples
+    -   2788 labeled as **nonspam**
+    -   1813 labeled as **spam**\
+-   57 predictive features representing word frequencies and character statistics\
+-   Goal: Train multiple classifiers to predict spam probability and evaluate performance metrics.
 
-## ✅ 0) Prerequisites
+## 📦 1. Import and Prepare the Dataset
 
-- **R** (version 4.x or newer): https://cran.r-project.org/  
-- **RStudio Desktop**: https://posit.co/download/rstudio-desktop/ *(optional but recommended)*  
-- Git + GitHub account (optional, for version control)
-
-> 💡 If you’re brand new: install R first, then RStudio.
-
----
-
-## 📁 1) Create Your Project Structure
-
-Create a folder for your repo (locally or by cloning an empty GitHub repo). Inside it, make this layout:
-
-```
-your-repo/
-├── R/                       # R scripts
-│   └── lab1_eda.R          # main script (we'll create this)
-├── images/                  # exported figures (auto-saved)
-├── README.md                # this file
-└── .gitignore               # optional
-```
-
-> We will write all analysis into `R/lab1_eda.R` and export plots to `images/`.
-
----
-
-## 🧰 2) Install Required Packages (one-time)
-
-Open R or RStudio Console and run:
-
-```r
-install.packages(c("tidyverse", "tidymodels", "GGally"))
-```
-
----
-
-## 🧪 3) Create the Analysis Script
-
-Create a new file at `R/lab1_eda.R` and paste everything from the sections below **in order**.  
-Then you can run chunks line-by-line or the whole file.
-
----
-
-## ⚙️ 3.1 Load Libraries & Data
-
-```r
-library(tidyverse)
+``` r
+# Required Libraries
+install.packages(c("tidymodels", "janitor", "pROC", "kknn", "kernlab", "ggplot2", "ranger", "vip"))
 library(tidymodels)
-library(GGally)
+library(janitor)
+library(pROC)
+library(kknn)
+library(kernlab)
+library(ggplot2)
+library(ranger)
+library(vip)
 
-data("iris")                     # built-in dataset (150 rows × 5 columns)
-iris_tbl <- as_tibble(iris)      # tibble format for cleaner printing
-glimpse(iris_tbl)
-summary(iris_tbl)
+# Load and Clean Data
+spambase <- read.csv("C:/Users/cchri/Downloads/spambase.csv") %>% clean_names()
+spambase$type <- factor(spambase$type, levels = c("nonspam", "spam"))
+
+glimpse(spambase)
 ```
 
-**Expected:** 150 rows × 5 columns.  
-Numeric variables = `Sepal.Length`, `Sepal.Width`, `Petal.Length`, `Petal.Width`; Factor = `Species`.
+**Answer (Q1–Q2):**\
+- Total emails: 4601 (2788 nonspam, 1813 spam)\
+- Setting factor levels ensures the model recognizes *nonspam* as negative (0) and *spam* as positive (1).
 
----
+------------------------------------------------------------------------
 
-## 📊 4) Descriptive Statistics (Range, SD, etc.)
+## ✂️ 2. Partition the Dataset
 
-### 4.1 Quick Min/Max/Range/SD for Each Numeric Feature
-
-```r
-desc_stats <- iris_tbl %>%
-  summarise(across(where(is.numeric),
-                   list(min = min, max = max, range = ~max(.) - min(.), sd = sd),
-                   .names = "{.col}_{.fn}"))
-desc_stats
+``` r
+set.seed(42)
+split <- initial_split(spambase, prop = 0.8, strata = type)
+train <- training(split)
+test  <- testing(split)
+folds <- vfold_cv(train, v = 5, strata = type)
 ```
 
-### 4.2 Per-Species Mean/Median/SD (Grouped Summary)
+**Answer (Q3):**\
+We split data first to ensure an **unseen test set**, preventing **data leakage** during cross-validation.
 
-```r
-sum_by_species <- iris_tbl %>%
-  group_by(Species) %>%
-  summarise(across(where(is.numeric),
-                   list(mean = mean, median = median, sd = sd),
-                   .names = "{.col}_{.fn}"))
-sum_by_species
+------------------------------------------------------------------------
+
+## ⚙️ 3. Preprocessing & Normalization
+
+Normalization ensures each variable contributes equally to distance-based models like **k-NN** and **SVM**.
+
+``` r
+base_rec <- recipe(type ~ ., data = train) %>%
+  step_zv(all_predictors()) %>%
+  step_normalize(all_predictors())
 ```
 
----
+**Answer (Q4):**\
+Normalization is critical for algorithms that rely on Euclidean distance, improving model fairness and convergence.
 
-## 📈 5) Univariate Visualizations
+------------------------------------------------------------------------
 
-> These help visualize shape (skew/symmetry), spread, and potential outliers.
+## 🌱 4. k-Nearest Neighbors (k-NN)
 
-### 5.1 Histograms by Species
+``` r
+knn_spec <- nearest_neighbor(neighbors = tune(), mode = "classification") %>%
+  set_engine("kknn")
 
-```r
-p_hist_sepal_len <- ggplot(iris_tbl, aes(Sepal.Length, fill = Species)) +
-  geom_histogram(alpha = 0.6, bins = 20) +
-  labs(title = "Distribution of Sepal Length by Species")
+knn_wf <- workflow() %>%
+  add_recipe(base_rec) %>%
+  add_model(knn_spec)
 
-p_hist_sepal_wid <- ggplot(iris_tbl, aes(Sepal.Width, fill = Species)) +
-  geom_histogram(alpha = 0.6, bins = 20) +
-  labs(title = "Distribution of Sepal Width by Species")
+knn_grid <- tibble(neighbors = seq(1, 31, by = 2))
 
-p_hist_petal_len <- ggplot(iris_tbl, aes(Petal.Length, fill = Species)) +
-  geom_histogram(alpha = 0.6, bins = 20) +
-  labs(title = "Distribution of Petal Length by Species")
+set.seed(42)
+knn_res <- tune_grid(knn_wf, resamples = folds, grid = knn_grid,
+                     metrics = metric_set(accuracy, precision, recall, roc_auc))
 
-p_hist_petal_wid <- ggplot(iris_tbl, aes(Petal.Width, fill = Species)) +
-  geom_histogram(alpha = 0.6, bins = 20) +
-  labs(title = "Distribution of Petal Width by Species")
-
-p_hist_sepal_len; p_hist_sepal_wid; p_hist_petal_len; p_hist_petal_wid
+autoplot(knn_res, metric = "accuracy")
+show_best(knn_res, metric = "accuracy")
 ```
 
----
+**Answer (Q7):**\
+Best **k = 3** with accuracy ≈ **0.911**.\
+Smaller *k* values captured finer distinctions between spam and nonspam.
 
-### 5.2 Boxplots by Species (Spot Outliers)
+**Answer (Q8–Q9):**\
+- False Positives: 59\
+- False Negatives: 35\
+- FP = real emails mislabeled as spam; FN = spam reaching inbox (more dangerous).
 
-```r
-box_by_species <- function(var) {
-  ggplot(iris_tbl, aes(x = Species, y = {{ var }}, fill = Species)) +
-    geom_boxplot() +
-    labs(title = paste("Boxplot of", rlang::as_name(ensym(var)), "by Species"))
-}
+------------------------------------------------------------------------
 
-p_box_sepal_len <- box_by_species(Sepal.Length)
-p_box_sepal_wid <- box_by_species(Sepal.Width)
-p_box_petal_len <- box_by_species(Petal.Length)
-p_box_petal_wid <- box_by_species(Petal.Width)
+## 🧠 5. Support Vector Machine (SVM – RBF Kernel)
 
-p_box_sepal_len; p_box_sepal_wid; p_box_petal_len; p_box_petal_wid
+``` r
+svm_spec <- svm_rbf(mode = "classification", cost = tune(), rbf_sigma = tune()) %>%
+  set_engine("kernlab")
+
+svm_wf <- workflow() %>%
+  add_recipe(base_rec) %>%
+  add_model(svm_spec)
+
+svm_grid <- grid_latin_hypercube(cost(), rbf_sigma(), size = 20)
+
+set.seed(42)
+svm_res <- tune_grid(svm_wf, resamples = folds, grid = svm_grid,
+                     metrics = metric_set(accuracy, precision, recall, roc_auc))
+
+autoplot(svm_res, metric = "accuracy")
+show_best(svm_res, metric = "accuracy")
 ```
 
-> **Observation:** *Iris virginica* often shows greater variability in petal dimensions.
+**Answer (Q10–Q12):**\
+- Best parameters: **cost = 12.5**, **rbf_sigma = 0.00433**, accuracy = **0.934**\
+- `cost` controls misclassification penalty; `rbf_sigma` controls decision boundary flexibility.
 
----
+**Answer (Q13–Q15):**\
+- ROC AUC = **0.9749**, indicating strong model performance.\
+- Support vectors define decision margins; spam clusters corresponded to emails with aggressive capitalization.
 
-## 🔗 6) Bivariate Relationships (Pairs & Scatterplots)
+------------------------------------------------------------------------
 
-### 6.1 Pairwise Scatterplot Matrix (`ggpairs`)
+## 🌳 6. Random Forest (Exploration–Other ML Methods)
 
-```r
-p_pairs <- ggpairs(iris_tbl, aes(color = Species))
-p_pairs
+``` r
+rf_spec <- rand_forest(trees = tune(), mtry = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("classification")
+
+rf_wf <- workflow() %>%
+  add_recipe(base_rec) %>%
+  add_model(rf_spec)
+
+rf_grid <- grid_latin_hypercube(trees(), mtry(), min_n(), size = 10)
+
+set.seed(42)
+rf_res <- tune_grid(rf_wf, resamples = folds, grid = rf_grid,
+                    metrics = metric_set(accuracy, precision, recall, roc_auc))
+
+show_best(rf_res, metric = "accuracy")
+rf_fit <- finalize_workflow(rf_wf, select_best(rf_res, "accuracy")) %>% fit(train)
+
+vip(extract_fit_parsnip(rf_fit), num_features = 15) +
+  labs(title = "Random Forest – Top 15 Feature Importances")
 ```
 
-**Key observations:**
-- **Petal.Length vs Petal.Width:** Strongest positive relationship (≈ 0.96)  
-- **Sepal.Length vs Petal.Length:** Moderate positive  
-- **Sepal.Width:** Generally weaker correlations  
+**Answer (Q20):**\
+Random Forest achieved **Accuracy = 0.955**, **Recall = 0.978**, and **ROC-AUC = 0.9822**, outperforming SVM and k-NN.\
+It’s ideal for real-world spam filters due to efficiency, scalability, and low tuning complexity.
 
----
+``` r
+Code:
+    library(ranger)
+library(vip)
 
-### 6.2 Focused Scatterplots (Sepal vs Sepal, Petal vs Petal)
+# Track runtime
+rf_time <- system.time({
+    
+    # 1. Specify the model
+    rf_spec <- rand_forest(
+        trees = tune(),       # number of trees
+        mtry  = tune(),       # number of variables randomly sampled as candidates at each split
+        min_n = tune()        # minimum node size
+    ) %>%
+        set_engine("ranger", importance = "impurity") %>%
+        set_mode("classification")
+    
+    # 2. Build a workflow using base_rec
+    rf_wf <- workflow() %>%
+        add_recipe(base_rec) %>%
+        add_model(rf_spec)
+    
+    # 3. Create a tuning grid
+    rf_grid <- grid_latin_hypercube(
+        trees(range = c(200, 1000)),
+        mtry(range = c(3, 15)),
+        min_n(range = c(1, 10)),
+        size = 10
+    )
+    
+    # 4. Tune the model using 5-fold CV
+    set.seed(42)
+    rf_res <- tune_grid(
+        rf_wf,
+        resamples = folds,
+        grid = rf_grid,
+        metrics = eval_metrics,
+        control = control_grid(save_pred = TRUE, verbose = TRUE)
+    )
+    
+    # 5. View tuning results
+    collect_metrics(rf_res)
+    show_best(rf_res, metric = "accuracy", n = 5)
+    autoplot(rf_res, metric = "accuracy")
+    
+    # 6. Select best model by accuracy
+    best_rf <- select_best(rf_res, metric = "accuracy")
+    
+    # 7. Finalize and fit the model
+    rf_final_wf <- finalize_workflow(rf_wf, best_rf)
+    rf_fit <- fit(rf_final_wf, train)
+    
+    # 8. Make predictions on the test set
+    rf_preds <- predict(rf_fit, test, type = "prob") %>%
+        bind_cols(predict(rf_fit, test, type = "class")) %>%
+        bind_cols(test %>% select(type))
+    
+})  # End runtime tracking
 
-```r
-p_sepal_plane <- ggplot(iris_tbl, aes(Sepal.Length, Sepal.Width, color = Species)) +
-  geom_point(size = 3, alpha = 0.7) +
-  labs(title = "Sepal Dimensions Overlap Between Species",
-       x = "Sepal Length (cm)", y = "Sepal Width (cm)")
+rf_time
+# This prints out runtime (in seconds)
 
-p_petal_plane <- ggplot(iris_tbl, aes(Petal.Length, Petal.Width, color = Species)) +
-  geom_point(size = 3, alpha = 0.7) +
-  labs(title = "Petal Dimensions Clearly Separate Species",
-       x = "Petal Length (cm)", y = "Petal Width (cm)")
+# 9. Confusion Matrix (basic)
+cm_rf <- conf_mat(rf_preds, truth = type, estimate = .pred_class)
+autoplot(cm_rf, type = "heatmap") +
+    labs(title = "Random Forest — Confusion Matrix")
 
-p_sepal_plane; p_petal_plane
+# 10. Confusion Matrix
+cm_rf_df <- as.data.frame(cm_rf$table)
+colnames(cm_rf_df) <- c("Truth","Prediction","Count")
+
+cm_rf_df$Label <- NA
+cm_rf_df$Label[cm_rf_df$Truth == "spam"    & cm_rf_df$Prediction == "spam"]    <- "True Positive"
+cm_rf_df$Label[cm_rf_df$Truth == "nonspam" & cm_rf_df$Prediction == "nonspam"] <- "True Negative"
+cm_rf_df$Label[cm_rf_df$Truth == "nonspam" & cm_rf_df$Prediction == "spam"]    <- "False Positive"
+cm_rf_df$Label[cm_rf_df$Truth == "spam"    & cm_rf_df$Prediction == "nonspam"] <- "False Negative"
+
+cm_rf_df$Percent <- round(cm_rf_df$Count / sum(cm_rf_df$Count) * 100, 1)
+
+ggplot(cm_rf_df, aes(Prediction, Truth, fill = Count)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = paste0(Label,"\n",Count,"\n(",Percent,"%)")),
+              fontface="bold", size=4) +
+    scale_fill_gradient(low="#F7FBFF", high="orange") +
+    labs(
+        title = "Random Forest — Confusion Matrix (Labeled)",
+        x = "Predicted Class",
+        y = "Actual Class",
+        fill = "Count"
+    ) +
+    theme_minimal(base_size = 13)
+
+# 11. Full metrics
+rf_metrics_out <- rf_preds %>%
+    full_metrics(truth = type, estimate = .pred_class, .pred_spam)
+
+rf_metrics_out
+
+# 12. ROC Curve
+roc_rf <- pROC::roc(
+    response  = rf_preds$type,
+    predictor = rf_preds$.pred_spam
+)
+
+plot(roc_rf, col = "darkorange", main = "Random Forest — ROC Curve")
+pROC::auc(roc_rf)
+# 13. Feature Importance Plot
+rf_fit %>%
+    extract_fit_parsnip() %>%
+    vip(num_features = 15) +
+    labs(title = "Random Forest - Top 15 Feature Importances")
 ```
 
-> **Interpretation:** Petal features show clear class separation, while sepal features overlap (especially *versicolor* vs *virginica*).
+## 📊 7. Model Comparison
 
----
+| Model         | Accuracy  | Recall    | Precision | F1        |
+|:--------------|:----------|:----------|:----------|:----------|
+| k-NN          | 0.909     | 0.934     | 0.917     | 0.925     |
+| SVM (RBF)     | 0.938     | 0.969     | 0.931     | 0.950     |
+| Random Forest | **0.955** | **0.978** | **0.949** | **0.964** |
 
-## 🔥 7) Correlations (Heatmap)
-
-```r
-cor_matrix <- cor(iris_tbl %>% select(where(is.numeric)))
-
-cor_data <- as.data.frame(cor_matrix) %>%
-  rownames_to_column("Var1") %>%
-  pivot_longer(cols = -Var1, names_to = "Var2", values_to = "value")
-
-p_heat <- ggplot(cor_data, aes(Var1, Var2, fill = value)) +
-  geom_tile(color = "white") +
-  geom_text(aes(label = round(value, 2)), size = 4) +
-  scale_fill_gradient2(low = "blue", mid = "white", high = "red", midpoint = 0) +
-  labs(title = "Correlation Heatmap of Iris Numeric Variables", fill = "Correlation") +
-  theme_minimal()
-
-p_heat
-```
-
-> Confirms that **Petal.Length ↔ Petal.Width** have the strongest correlation (≈ 0.96).
-
----
-
-## 💾 8) Export All Figures (PNG)
-
-```r
-if (!dir.exists("images")) dir.create("images")
-
-ggsave("images/hist_sepal_length.png", p_hist_sepal_len, width = 8, height = 6, dpi = 300)
-ggsave("images/hist_sepal_width.png",  p_hist_sepal_wid, width = 8, height = 6, dpi = 300)
-ggsave("images/hist_petal_length.png", p_hist_petal_len, width = 8, height = 6, dpi = 300)
-ggsave("images/hist_petal_width.png",  p_hist_petal_wid, width = 8, height = 6, dpi = 300)
-
-ggsave("images/box_sepal_length.png",  p_box_sepal_len, width = 8, height = 6, dpi = 300)
-ggsave("images/box_sepal_width.png",   p_box_sepal_wid, width = 8, height = 6, dpi = 300)
-ggsave("images/box_petal_length.png",  p_box_petal_len, width = 8, height = 6, dpi = 300)
-ggsave("images/box_petal_width.png",   p_box_petal_wid, width = 8, height = 6, dpi = 300)
-
-ggsave("images/ggpairs_matrix.png",    p_pairs,         width = 10, height = 8, dpi = 300)
-ggsave("images/sepal_scatter.png",     p_sepal_plane,   width = 8,  height = 6, dpi = 300)
-ggsave("images/petal_scatter.png",     p_petal_plane,   width = 8,  height = 6, dpi = 300)
-ggsave("images/cor_heatmap.png",       p_heat,          width = 8,  height = 6, dpi = 300)
-```
-
----
-
-## 🧪 9) Reproducibility Notes
-
-- No random sampling used → same results on any R 4.x setup.  
-- To check versions:
-```r
-sessionInfo()
-```
-
----
-
-## 🧯 10) Troubleshooting
-
-- **Plots not saving?** Ensure `images/` exists and you have write permissions.  
-- **Function not found?** Re-run `install.packages(...)` and `library(...)`.  
-- **Encoding issues?** Replace special symbols like “×” with “x”.
-
----
+**Answer (Q16–Q19):**\
+SVM outperformed k-NN across metrics, but Random Forest achieved the best overall balance of accuracy, recall, and scalability.
 
 ## 📚 References
 
-- Fisher, R. A. (1936). *The Use of Multiple Measurements in Taxonomic Problems.* *Annals of Eugenics.*  
-- R Documentation: `?iris`  
-- GGally Documentation: [https://ggobi.github.io/ggally/](https://ggobi.github.io/ggally/)
+-   scikit-learn. (2018). *Support Vector Machines*. [scikit-learn.org](https://scikit-learn.org/stable/modules/svm.html)\
+-   scikit-learn. (2019). *RBF SVM Parameters*. [scikit-learn.org](https://scikit-learn.org/stable/auto_examples/svm/plot_rbf_parameters.html)\
+-   Hopkins, M., Reeber, E., Forman, G., & Suermondt, J. (1999). *Spambase Dataset.* Hewlett-Packard Labs.
 
----
-
-## 📦 What to Commit
-
-```
-your-repo/
-├── R/
-│   └── lab1_eda.R
-├── images/
-│   ├── ggpairs_matrix.png
-│   ├── petal_scatter.png
-│   ├── sepal_scatter.png
-│   ├── cor_heatmap.png
-│   ├── hist_sepal_length.png
-│   ├── hist_sepal_width.png
-│   ├── hist_petal_length.png
-│   ├── hist_petal_width.png
-│   ├── box_sepal_length.png
-│   ├── box_sepal_width.png
-│   ├── box_petal_length.png
-│   └── box_petal_width.png
-└── README.md
-```
-
----
-
-## 🏁 Quick Run (All at Once)
-
-From the repo root in a terminal:
-
-```bash
-Rscript R/lab1_eda.R
-```
-
-Figures will appear under `images/`.  
-Open them and embed in your README or report as needed.
+💡 **Created with ❤ by Cierra Christian, Megan Geer, and Gary Mullings** Disclaimer(We ran the lab differently, so our outputs may be different)
