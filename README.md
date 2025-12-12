@@ -1541,5 +1541,3 @@ This project demonstrates:
 * Interpretable security analytics
 
 ---
-
-Just tell me — this is already **portfolio-ready** ✅
