@@ -1,615 +1,1545 @@
-````markdown
-# 🔐 CYBR 520 – Lab 5  
-## Deep Learning for Intrusion Detection (UNSW-NB15, R + Keras)
+# 🚪❄️🌡️ TON_IoT Multi-Device Machine Learning Pipeline
 
-**Authors:**  
-- Cierra Christian  
-- Megan Geer  
-- Gary Mullings  
+**Group 2 — IoT Intrusion Detection Using Machine Learning**
 
----
+**Authors & Model Ownership**
 
-## 🌟 Project Overview
-
-This lab builds a **deep learning–based Intrusion Detection System (IDS)** using the **UNSW-NB15** dataset and a **multi-layer perceptron (MLP)** in R with Keras/TensorFlow.
-
-We walk through:
-
-- Data understanding & cleaning  
-- One-hot encoding and feature scaling  
-- Building a **baseline MLP** and a **tuned MLP** (BatchNorm + Dropout + EarlyStopping)  
-- Evaluating performance with **Accuracy** and **Macro-F1**  
-- Training dynamics (epochs, overfitting, early stopping)  
-- A bonus comparison: **MLP vs Random Forest** on the Iris dataset  
+* **Gary Mullings** — k-Nearest Neighbors (kNN)
+* **Cierra Christian** — Random Forest
+* **Megan Geer** — XGBoost
 
 ---
 
-## 🧰 Tech Stack
+## 📌 Project Overview
 
-- **Language:** R  
-- **Deep Learning:** `keras`, `tensorflow`  
-- **Data Wrangling:** `tidyverse`, `dplyr`, `janitor`, `recipes`  
-- **Evaluation:** `yardstick`, `caret`  
-- **Visualization:** `ggplot2`, `scales`  
-- **Extra (Exploration):** `randomForest`  
+The rapid expansion of Internet-of-Things (IoT) devices has created complex, high-volume telemetry streams that are difficult to secure using traditional rule-based methods. Each connected device introduces unique behavioral patterns and potential attack vectors, increasing the risk of undetected intrusions.
+
+This project applies **machine learning–based intrusion detection** to **multiple IoT device types** using the **TON_IoT dataset**. A **single, consistent pipeline** is used across all devices to ensure fair comparison between models and datasets.
+
+We evaluate three machine learning models:
+
+* kNN
+* Random Forest
+* XGBoost
+
+Across three IoT devices:
+
+* Garage Door
+* Fridge
+* Thermostat
+
+Each model is evaluated in **baseline** and **tuned** configurations.
 
 ---
 
-## ⚙️ Environment Setup (R + TensorFlow)
+## 🧠 Pipeline Design (Shared Across All Devices)
 
-> Run these once to set up your deep learning environment.
+All datasets follow the same structure:
+
+1. **Data Loading & Cleaning**
+2. **Feature Engineering (time-based features)**
+3. **Stratified Sampling (15%)**
+4. **Train/Test Split (80/20)**
+5. **Shared Preprocessing Recipe**
+6. **Baseline Model Training**
+7. **Model Evaluation**
+8. **Hyperparameter Tuning (per model owner)**
+9. **Final Comparison (Baseline vs Tuned)**
+
+This ensures that performance differences reflect **model behavior**, not preprocessing inconsistencies.
+
+---
+
+## 🛠️ Libraries Used
 
 ```r
-# Install core packages
-install.packages(c("reticulate", "keras", "tensorflow", 
-                   "tidyverse", "janitor", "recipes", 
-                   "yardstick", "caret", "ggplot2", "scales"))
-
-library(reticulate)
-library(keras)
-library(tensorflow)
-
-# Install Miniconda (if needed)
-if (!reticulate::miniconda_exists()) {
-  reticulate::install_miniconda()
-}
-
-# Use the Miniconda env created for R
-use_miniconda("r-miniconda", required = TRUE)
-
-# Install TensorFlow (CPU is enough for this lab)
-tensorflow::install_tensorflow(version = "2.14.0")
-
-# Quick sanity check
-library(tensorflow)
-tf$constant("TensorFlow is working!")
-````
-
-After setup, **Restart R** (`Session → Restart R`) and you’re ready to run the lab code.
-
----
-
-## 📂 Data
-
-**Dataset:** [UNSW-NB15](https://research.unsw.edu.au/projects/unsw-nb15-dataset)
-
-* Generated in a cyber range using **IXIA PerfectStorm**
-* Contains **modern normal traffic + synthetic contemporary attacks**
-* Includes **49 engineered features** plus labels
-* Attack families: Fuzzers, Analysis, Backdoors, DoS, Exploits, Generic, Reconnaissance, Shellcode, Worms
-
-We use:
-
-* `UNSW_NB15_training-set.csv`
-* `UNSW_NB15_testing-set.csv`
-
----
-
-## 🧪 R Script Overview
-
-Main steps in the R pipeline:
-
-1. **Load libraries** and set theme/seed
-2. **Load CSVs** and `clean_names()`
-3. **Fill missing values** (`fill_missing()` helper)
-4. **Align factor levels** for `attack_cat`
-5. **Preprocessing recipe** with:
-
-   * `step_other()` for rare categories
-   * `step_dummy()` for one-hot encoding
-   * `step_zv()` to remove zero-variance features
-   * `step_normalize()` to scale numeric predictors
-6. **Convert to matrices** and **one-hot encode `attack_cat`** for Keras
-7. **Build & train Baseline MLP**
-8. **Build & train Tuned MLP** (BatchNorm + Dropout + EarlyStopping)
-9. **Evaluate models** with Accuracy, Macro-F1, and confusion matrices
-10. **Optional exploration:** MLP vs Random Forest on Iris dataset
-
----
-
-# 🧠 Section 1 – Data Understanding & Preparation
-
-### Q1. What is the UNSW-NB15 dataset designed for, and how does it differ from older IDS datasets (e.g., KDD99, NSL-KDD)?
-
-UNSW-NB15 was designed for **modern intrusion detection research**. It captures realistic, hybrid traffic with contemporary attacks and normal behavior.
-
-Older datasets like **KDD99/NSL-KDD** contain outdated attack types, synthetic traffic, and artifacts that don’t represent today’s networks. UNSW-NB15 uses IXIA PerfectStorm in a cyber range plus Argus/Bro-IDS features, giving us **49 modern features** and **nine attack families**, making it a much better fit for current ML-based IDS work.
-
----
-
-### Q2. What are the major attack categories in this dataset?
-
-The dataset has **nine attack families**:
-
-* Fuzzers
-* Analysis
-* Backdoors
-* DoS
-* Exploits
-* Generic
-* Reconnaissance
-* Shellcode
-* Worms
-
----
-
-### Q3. Is intrusion detection a multi-class classification problem or binary classification problem? Or both?
-
-Intrusion detection can be **both**:
-
-* **Binary:** Is this connection *benign vs. malicious*?
-* **Multi-class:** If malicious, *which* attack family (DoS, Exploits, Generic, etc.)?
-
-In this lab, our Keras model uses a **softmax output** with `K` classes (`layer_dense(units = K, activation = "softmax")`), so we treat IDS as a **multi-class classification problem** over the nine attack categories.
-
----
-
-### Q4. Why do we remove or ignore the `id` column before training the model?
-
-`id` is just a **row identifier**. It doesn’t carry any network behavior or attack information.
-
-If we kept it, the model could latch onto accidental patterns in the IDs (row order or grouping) instead of real features, which would **hurt generalization**. So we drop it:
-
-```r
-DROP_COLS <- c("id")
-
-train_raw <- train_raw %>% select(-any_of(DROP_COLS))
-test_raw  <- test_raw  %>% select(-any_of(DROP_COLS))
-```
-
----
-
-# 🧹 Section 2 – Data Cleaning & Preparation
-
-### Q5. Why do we replace missing values (numeric → 0, categorical → "unknown")?
-
-Neural networks don’t understand `NA`.
-
-* For **numeric columns**, we use `0` as a neutral placeholder that can be safely scaled later.
-* For **categorical columns**, we use `"unknown"` to explicitly mark “missing” as its own category, instead of pretending it’s one of the real values.
-
-This gives us a **complete, consistent matrix** to feed into the MLP.
-
----
-
-### Q6. Why do we apply one-hot encoding instead of label encoding?
-
-Label encoding (`1, 2, 3, 4, …`) introduces a **fake numeric order** where none exists. The model might think class `"4"` > `"1"` in some meaningful way.
-
-One-hot encoding turns each category into its own binary column, avoiding any implied hierarchy and letting the network learn flexible patterns without being misled by arbitrary integer labels.
-
----
-
-### Q7. Why must we apply the same preprocessing to both training and test data?
-
-The model expects the test data to be transformed **in exactly the same way** as the training data:
-
-* Same dummy columns
-* Same scaling
-* Same handling of rare levels
-
-If preprocessing differs, test rows may have **missing or extra features**, different scales, or unseen encodings, which leads to **garbage predictions** or outright errors. Using a single `recipe()` + `prep()` + `bake()` pipeline guarantees consistent transformations.
-
----
-
-# 📏 Section 3 – Feature Scaling
-
-### Q8. Why do we scale numeric features before training a neural network?
-
-Neural networks are sensitive to the **relative scale** of inputs:
-
-* If some features range in the thousands and others are between 0 and 1, the large features dominate the gradients.
-* Scaling puts all numeric features on a similar range, so:
-
-  * Gradients behave better
-  * Training becomes more stable
-  * The optimizer converges faster
-
----
-
-### Q9. What would likely happen if we trained an MLP *without* scaling?
-
-Without scaling, training would likely be:
-
-* **Slower** – gradients bounce around due to very different magnitudes
-* **Unstable** – big features dominate weight updates
-* **Less accurate** – small-scale features get ignored
-
-So the MLP might converge poorly, overfit certain dimensions, or never find a good minimum.
-
----
-
-# 🏗️ Section 4 – Model Architecture
-
-### Q10. In your own words, what is an MLP classifier?
-
-An **MLP (Multi-Layer Perceptron)** is a feed-forward neural network made of stacked layers of neurons.
-
-Each neuron takes inputs, applies weights + bias, passes through an activation (like ReLU), and sends information to the next layer.
-
-For classification, the network learns **nonlinear patterns** between features and labels by adjusting weights during training. Once trained, it outputs **class probabilities** for new inputs.
-
----
-
-### Q11. What loss function do we use, and why is it appropriate for multi-class classification?
-
-We use **categorical cross-entropy**:
-
-```r
-mlp_base %>% compile(
-  loss = "categorical_crossentropy",
-  optimizer = optimizer_adam(learning_rate = 1e-3),
-  metrics = c("accuracy")
-)
-```
-
-Categorical cross-entropy compares the model’s predicted probability distribution over classes to the **true one-hot label**, penalizing low probability assigned to the correct class.
-
-It’s the standard loss for **multi-class softmax classifiers**.
-
----
-
-# 📊 Section 5 – Baseline Model
-
-### Q12. What was the baseline model’s overall test Accuracy and Macro-F1 score?
-
-Using the baseline MLP architecture on UNSW-NB15, the model achieved:
-
-* **Accuracy:** approximately **82–87%**
-* **Macro-F1:** approximately **0.55–0.65**
-
-(Exact values come from the `metrics_base` output after running:)
-
-```r
-metrics_base <- eval_multi(y_test, pred_base)
-metrics_base
-```
-
----
-
-### Q13. Why is Macro-F1 more informative than Accuracy for this dataset?
-
-UNSW-NB15 is **class-imbalanced**:
-
-* Large classes: e.g., Generic, Exploits
-* Tiny classes: e.g., Worms, Shellcode, some Backdoors
-
-A model can get **high Accuracy** by mostly predicting majority classes and still completely miss minority attacks.
-
-**Macro-F1**:
-
-* Computes F1 **per class**
-* Averages them equally
-* Forces us to care about **small, rare attack types**, not just the big ones
-
-This makes Macro-F1 a much more honest metric for IDS performance.
-
----
-
-### Q14. Which attack class does the baseline model perform worst on, and why?
-
-From the confusion matrix, the baseline MLP struggles most with **minority attack classes**, especially:
-
-* Worms
-* Shellcode
-* Sometimes Backdoors
-
-These classes have **very few training examples**, so the model doesn’t see enough patterns to learn them well. Severe class imbalance + rare patterns = lots of misclassifications.
-
----
-
-# 🚀 Section 6 – Improved Model (BatchNorm + Dropout + EarlyStopping)
-
-### Q15. What are Batch Normalization and Dropout, and how do they help?
-
-* **Batch Normalization**
-
-  * Normalizes layer inputs across a mini-batch
-  * Keeps activations in a stable range
-  * Helps gradients flow better and speeds up convergence
-
-* **Dropout**
-
-  * Randomly “turns off” a fraction of neurons during training
-  * Forces the network not to rely on any single path
-  * Acts as a regularizer, reducing overfitting
-
-In the loss plots, the tuned model (with BN + Dropout) shows **smoother, more stable training** compared to the baseline.
-
----
-
-### Q16. What does the EarlyStopping callback do and why is it useful?
-
-**EarlyStopping** monitors validation performance (e.g., `val_loss`) and:
-
-* Stops training when the metric stops improving for several epochs
-* Restores the **best-performing weights**
-* Saves time and avoids training when the model is just overfitting
-
-This gives us a model that **generalizes better** without wasting extra epochs.
-
----
-
-### Q17. Did the tuned model outperform the baseline? How can you tell?
-
-Yes ✅
-
-The tuned model achieves a **higher Macro-F1** than the baseline. This means it:
-
-* Predicts attack categories more accurately overall
-* Especially improves performance on minority classes
-
-We can see the improvement in:
-
-* The **Macro-F1 comparison bar chart**
-* The **confusion matrix**, where low-support classes are predicted more often correctly
-
-BatchNorm + Dropout + EarlyStopping together give us a **more stable and better-generalizing** model.
-
----
-
-# ⏱️ Section 7 – Training Dynamics (Epochs & Loss)
-
-### Q18. What is an epoch? Why do we set a static max number of epochs?
-
-An **epoch** is one full pass through the entire training dataset. Neural networks usually need many epochs to slowly refine weights.
-
-We set a **maximum epochs** value (e.g., 40) so training has an upper bound for consistency. Then **EarlyStopping** can halt earlier when the validation loss stops improving, giving us:
-
-* A good model
-* No wasted computation
-* Less risk of overfitting
-
----
-
-### Q19. What do the loss and validation loss graphs tell us? Why not just run all 40 epochs?
-
-From the training/validation curves:
-
-* Training loss decreases and flattens around ~20 epochs
-* Validation loss slightly decreases and then **levels off** around the same point
-* Validation accuracy also plateaus
-
-This suggests that the model has basically **learned what it can** by ~20 epochs.
-
-Running all 40 epochs would:
-
-* Use extra compute
-* Risk overfitting (training loss keeps going down while validation loss stops improving)
-
-EarlyStopping stops around the “sweet spot” instead of blindly using all 40 epochs.
-
----
-
-### Q20. What additional techniques could further improve performance? (Name at least two)
-
-Two promising techniques:
-
-1. **SMOTE (Synthetic Minority Oversampling Technique)**
-
-   * Creates synthetic samples for minority classes
-   * Reduces class imbalance
-   * Often boosts recall and F1 for rare attacks
-
-2. **Feature Embeddings for Categorical Variables**
-
-   * Instead of one-hot encoding, learn dense vector embeddings
-   * Reduces input dimensionality
-   * Captures similarity between categories
-   * Often improves both performance and training efficiency
-
-```r
-Code:
-  # Part 7: Exploration
-  ############################################################
-# MLP vs. Random Forest on Iris Dataset
-############################################################
-
 library(tidyverse)
-library(recipes)
+library(tidymodels)
+library(lubridate)
+library(hms)
 library(janitor)
-library(caret)
-library(keras3)
-library(yardstick)
-library(ggplot2)
-library(scales)
-library(randomForest)
+library(kknn)
+library(ranger)
+library(xgboost)
+library(themis)
+library(finetune)
+library(doParallel)
+```
 
+---
+
+# 🚪 DATASET 1: GARAGE DOOR
+
+### File
+
+`IoT_Garage_Door.csv`
+
+### Device-Specific Feature
+
+* `sphone_signal` (categorical)
+
+---
+
+### 📄 Garage Door Pipeline Code
+
+```r
+```r
+##############################################
+# TON_IoT Garage Door Dataset - ML Pipeline
+# Group 2: Cierra Christian, Megan Geer, Gary Mullings
+# Ownership: Gary = kNN | Cierra = Random Forest | Megan = XGBoost
+##############################################
+
+##############################################
+# Libraries
+##############################################
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(hms)
+library(janitor)
+library(kknn)
+library(ranger)
+library(xgboost)
+library(themis)
+library(finetune)
+library(doParallel)
 set.seed(42)
-theme_set(theme_minimal(base_size = 13))
 
-############################################################
-# 1) Load Iris Dataset
-############################################################
+##############################################
+# 1. Load Dataset
+##############################################
+df_full <- read_csv("C:/Users/germe/OneDrive/Documents/R Code/IoT_Garage_Door.csv",
+                    show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(
+    date = as.Date(date, format = "%d-%b-%y"),
+    day_of_week = wday(date),
+    day_of_month = mday(date),
+    is_weekend = if_else(day_of_week %in% c(1, 7), 1, 0),
+    hour = hour(time),
+    minute = minute(time),
+    second = second(time),
+    sphone_signal = as.factor(sphone_signal),
+    label = factor(label, levels = c("1", "0"))
+  ) %>%
+  select(-date, -time, -type)
 
-data(iris)
-iris <- clean_names(iris)
-iris <- iris %>% rename(target = species)
+##############################################
+# 1B. SAMPLE THE DATASET (STRATIFIED)
+##############################################
+df <- df_full %>%
+  group_by(label) %>%
+  sample_frac(0.15) %>%      # 15% of each class
+  ungroup()
 
-# Train-test split
-set.seed(42)
-train_idx <- createDataPartition(iris$target, p = 0.8, list = FALSE)
-train_raw <- iris[train_idx, ]
-test_raw  <- iris[-train_idx, ]
+cat("Sampled rows:", nrow(df), "\n")
+table(df$label)
 
-############################################################
-# 2) Preprocessing: One-hot + Scaling
-############################################################
+##############################################
+# 2. Train/Test Split
+##############################################
+split <- initial_split(df, prop = 0.80, strata = label)
+train_df <- training(split)
+test_df  <- testing(split)
 
-rec <- recipe(target ~ ., data = train_raw) %>%
+##############################################
+# 3. Preprocessing Recipe (shared across models)
+##############################################
+recipe_base <- recipe(label ~ ., data = train_df) %>%
+  step_zv(all_predictors()) %>%
+  step_impute_median(all_numeric()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
   step_normalize(all_numeric_predictors()) %>%
-  step_dummy(all_nominal_predictors())
+  step_smote(label)
 
-prep_obj <- prep(rec, training = train_raw)
-train_baked <- bake(prep_obj, new_data = train_raw)
-test_baked  <- bake(prep_obj, new_data = test_raw)
+##############################################
+# 4. BASELINE MODELS (kNN + RF + XGB)
+##############################################
 
-# Extract
-y_train <- train_baked$target
-y_test  <- test_baked$target
-X_train <- train_baked %>% select(-target)
-X_test  <- test_baked %>% select(-target)
+# ---------------------------
+# Gary Mullings — kNN (Baseline)
+# ---------------------------
+knn_spec <- nearest_neighbor(
+  mode = "classification",
+  neighbors = 5,
+  weight_func = "rectangular",
+  dist_power = 2
+) %>% 
+  set_engine("kknn")
 
-# Convert to matrices
-X_train_m <- as.matrix(X_train)
-X_test_m  <- as.matrix(X_test)
+# ---------------------------
+# Cierra Christian — Random Forest (Baseline)
+# ---------------------------
+rf_spec <- rand_forest(
+  mode = "classification",
+  trees = 500
+) %>% 
+  set_engine("ranger", probability = TRUE)
 
-# One-hot encoding for MLP labels
-class_levels <- levels(y_train)
-K <- length(class_levels)
+# ---------------------------
+# Megan Geer — XGBoost (Baseline)
+# ---------------------------
+xgb_spec <- boost_tree(
+  mode = "classification",
+  trees = 200,
+  tree_depth = 6,
+  learn_rate = 0.1,
+  loss_reduction = 0.01
+) %>% set_engine("xgboost")
 
-y_train_idx <- as.integer(y_train) - 1
-y_test_idx  <- as.integer(y_test)  - 1
+##############################################
+# 5. BASELINE WORKFLOWS + FITS
+##############################################
+knn_wf <- workflow() %>% add_model(knn_spec) %>% add_recipe(recipe_base)
+rf_wf  <- workflow() %>% add_model(rf_spec)  %>% add_recipe(recipe_base)
+xgb_wf <- workflow() %>% add_model(xgb_spec) %>% add_recipe(recipe_base)
 
-y_train_oh <- to_categorical(y_train_idx, num_classes = K)
-y_test_oh  <- to_categorical(y_test_idx,  num_classes = K)
+knn_fit <- fit(knn_wf, data = train_df)
+rf_fit  <- fit(rf_wf,  data = train_df)
+xgb_fit <- fit(xgb_wf, data = train_df)
 
-############################################################
-# 3) MLP Model
-############################################################
-
-input_dim <- ncol(X_train_m)
-
-mlp_model <- keras_model_sequential() %>%
-  layer_dense(units = 16, activation = "relu", input_shape = input_dim) %>%
-  layer_dense(units = K, activation = "softmax")
-
-mlp_model %>% compile(
-  loss = "categorical_crossentropy",
-  optimizer = optimizer_adam(learning_rate = 1e-3),
-  metrics = "accuracy"
+##############################################
+# 6. Megan — Feature Importance for Original XGBoost
+##############################################
+recipe_prepped <- prep(recipe_base)
+xgb_matrix <- bake(recipe_prepped, new_data = train_df, all_predictors(), composition = "matrix")
+xgb_engine <- extract_fit_engine(xgb_fit)
+xgb_importance_tbl <- xgboost::xgb.importance(
+  feature_names = colnames(xgb_matrix),
+  model = xgb_engine
 )
 
-hist_mlp <- mlp_model %>% fit(
-  x = X_train_m,
-  y = y_train_oh,
-  validation_split = 0.2,
-  epochs = 40,
-  batch_size = 8,
-  verbose = 2
-)
+xgb_importance_plot <- ggplot(xgb_importance_tbl, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Original XGBoost Feature Importance – IoT_Garage_Door", x = "Feature", y = "Gain") +
+  theme_minimal(base_size = 14)
+print(xgb_importance_plot)
 
-# Plot learning curves
-plot(hist_mlp)
-
-############################################################
-# 4) MLP Evaluation
-############################################################
-
-prob_mlp <- mlp_model %>% predict(X_test_m)
-pred_mlp_idx <- max.col(prob_mlp)
-pred_mlp <- factor(class_levels[pred_mlp_idx], levels = class_levels)
-
-cm_mlp <- table(Actual = y_test, Predicted = pred_mlp)
-cm_mlp
-
-############################################################
-# 5) Random Forest Classifier
-############################################################
-
-rf_model <- randomForest(
-  target ~ .,
-  data = train_raw,
-  ntree = 500,
-  mtry = 2
-)
-
-pred_rf <- predict(rf_model, test_raw)
-cm_rf <- table(Actual = y_test, Predicted = pred_rf)
-cm_rf
-
-############################################################
-# 6) Metrics
-############################################################
-
-eval_multi <- function(y_true, y_pred) {
-  y_true <- factor(y_true)
-  y_pred <- factor(y_pred, levels = levels(y_true))
-  df <- tibble(.truth = y_true, .pred = y_pred)
+##############################################
+# 7. Evaluation Helpers (shared)
+##############################################
+evaluate_model <- function(model_fit, test_data, model_name) {
   
-  tibble(
-    Accuracy = accuracy(df, truth = .truth, estimate = .pred) |> pull(.estimate),
-    Macro_F1 = f_meas(df, truth = .truth, estimate = .pred, estimator = "macro") |> pull(.estimate)
+  pred_df <- bind_cols(
+    predict(model_fit, test_data),
+    predict(model_fit, test_data, type = "prob"),
+    test_data
+  )
+  
+  metrics_tbl <- pred_df %>% metrics(truth = label, estimate = .pred_class)
+  roc_auc_tbl <- pred_df %>% roc_auc(truth = label, .pred_1)
+  pr_auc_tbl  <- pred_df %>% pr_auc(truth = label, .pred_1)
+  f1_tbl      <- pred_df %>% f_meas(truth = label, estimate = .pred_class)
+  cm          <- pred_df %>% conf_mat(truth = label, estimate = .pred_class)
+  
+  list(
+    metrics  = bind_rows(metrics_tbl, roc_auc_tbl, pr_auc_tbl, f1_tbl),
+    conf_mat = cm,
+    pred     = pred_df
   )
 }
 
-metrics_mlp <- eval_multi(y_test, pred_mlp)
-metrics_rf  <- eval_multi(y_test, pred_rf)
+plot_confusion_matrix <- function(conf_mat_obj, model_name) {
+  
+  cm_df <- as.data.frame(conf_mat_obj$table)
+  colnames(cm_df) <- c("Truth", "Prediction", "Count")
+  
+  cm_df$Label <- NA
+  cm_df$Label[cm_df$Truth == "1" & cm_df$Prediction == "1"] <- "True Positive"
+  cm_df$Label[cm_df$Truth == "0" & cm_df$Prediction == "0"] <- "True Negative"
+  cm_df$Label[cm_df$Truth == "0" & cm_df$Prediction == "1"] <- "False Positive"
+  cm_df$Label[cm_df$Truth == "1" & cm_df$Prediction == "0"] <- "False Negative"
+  
+  cm_df$Percent <- round(cm_df$Count / sum(cm_df$Count) * 100, 2)
+  
+  ggplot(cm_df, aes(Prediction, Truth, fill = Count)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = paste0(Label, "\n", Count, "\n(", Percent, "%)")),
+              fontface = "bold", size = 4) +
+    scale_fill_gradient(low = "#F7FBFF", high = "orange") +
+    labs(
+      title = paste(model_name, "— Confusion Matrix"),
+      x = "Predicted Class",
+      y = "Actual Class",
+      fill = "Count"
+    ) +
+    theme_minimal(base_size = 13)
+}
 
-metrics_mlp
-metrics_rf
+##############################################
+# 8. BASELINE RESULTS (All 3 models)
+##############################################
+knn_results <- evaluate_model(knn_fit, test_df, "kNN (Baseline — Gary)")
+rf_results  <- evaluate_model(rf_fit,  test_df, "Random Forest (Baseline — Cierra)")
+xgb_results <- evaluate_model(xgb_fit, test_df, "XGBoost (Baseline — Megan)")
 
-############################################################
-# 7) Final Comparison
-############################################################
+print(knn_results$metrics); print(knn_results$conf_mat)
+print(rf_results$metrics);  print(rf_results$conf_mat)
+print(xgb_results$metrics); print(xgb_results$conf_mat)
 
-results <- bind_rows(
-  metrics_mlp %>% mutate(Model = "MLP"),
-  metrics_rf  %>% mutate(Model = "Random Forest")
-) %>% relocate(Model)
+plot_confusion_matrix(knn_results$conf_mat, "kNN (Baseline — Gary)")
+plot_confusion_matrix(rf_results$conf_mat,  "Random Forest (Baseline — Cierra)")
+plot_confusion_matrix(xgb_results$conf_mat, "XGBoost (Baseline — Megan)")
 
-print(results)
+##############################################
+# 9. ROC CURVES (Baseline comparison)
+##############################################
+roc_all <- bind_rows(
+  knn_results$pred %>% 
+    select(label, .pred_1) %>% 
+    rename(truth = label, prob = .pred_1) %>%
+    mutate(model = "kNN (Gary)"),
+  
+  rf_results$pred %>% 
+    select(label, .pred_1) %>% 
+    rename(truth = label, prob = .pred_1) %>%
+    mutate(model = "Random Forest (Cierra)"),
+  
+  xgb_results$pred %>% 
+    select(label, .pred_1) %>% 
+    rename(truth = label, prob = .pred_1) %>% 
+    mutate(model = "XGBoost (Megan)")
+)
 
-ggplot(results, aes(x = Model, y = Macro_F1, fill = Model)) +
+roc_curve_df <- roc_all %>%
+  group_by(model) %>%
+  roc_curve(truth, prob)
+
+ggplot(roc_curve_df, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line(size = 1.3) +
+  geom_abline(lty = 3) +
+  labs(
+    title = "ROC Curve – Baseline Model Comparison (Garage Door)",
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) +
+  theme_minimal(base_size = 14)
+
+roc_all %>% group_by(model) %>% roc_auc(truth, prob)
+
+#####################################################################
+# 10. TUNED MODELS (ONE PER PERSON)
+#####################################################################
+
+##############################################
+# 10A. Gary Mullings — Tuned kNN (Tune k)
+##############################################
+knn_tune_spec <- nearest_neighbor(
+  mode        = "classification",
+  neighbors   = tune(),
+  weight_func = "rectangular",
+  dist_power  = 2
+) %>% set_engine("kknn")
+
+knn_tune_wf <- workflow() %>%
+  add_model(knn_tune_spec) %>%
+  add_recipe(recipe_base)
+
+folds   <- vfold_cv(train_df, v = 5, strata = label)
+k_grid  <- tibble(neighbors = seq(1, 31, by = 2))
+metric_k <- metric_set(accuracy, f_meas)
+
+knn_tuned <- knn_tune_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid      = k_grid,
+    metrics   = metric_k
+  )
+
+knn_tune_results <- knn_tuned %>% collect_metrics()
+
+best_k <- knn_tune_results %>%
+  dplyr::filter(.metric == "accuracy") %>%
+  dplyr::arrange(desc(mean)) %>%
+  dplyr::slice(1) %>%
+  dplyr::pull(neighbors)
+
+cat("Best k (Gary) based on CV accuracy:", best_k, "\n")
+
+knn_spec_final <- nearest_neighbor(
+  mode        = "classification",
+  neighbors   = best_k,
+  weight_func = "rectangular",
+  dist_power  = 2
+) %>% set_engine("kknn")
+
+knn_final_wf  <- workflow() %>% add_model(knn_spec_final) %>% add_recipe(recipe_base)
+knn_final_fit <- fit(knn_final_wf, data = train_df)
+
+knn_tuned_results <- evaluate_model(knn_final_fit, test_df, "kNN (Tuned — Gary)")
+print(knn_tuned_results$metrics)
+print(knn_tuned_results$conf_mat)
+plot_confusion_matrix(knn_tuned_results$conf_mat, "kNN (Tuned — Gary)")
+
+##############################################
+# 10B. Megan Geer — Tuned XGBoost (Bayesian)
+##############################################
+cl <- makeCluster(parallel::detectCores() - 1)
+registerDoParallel(cl)
+
+xgb_tune_wf <- workflow() %>%
+  add_model(
+    boost_tree(
+      mode = "classification",
+      trees = tune(),
+      tree_depth = tune(),
+      learn_rate = tune(),
+      loss_reduction = tune()
+    ) %>% set_engine("xgboost")
+  ) %>%
+  add_recipe(recipe_base)
+
+xgb_resamples <- vfold_cv(train_df, v = 3, strata = label)
+
+xgb_param_set <- parameters(
+  trees(range = c(50, 150)),
+  tree_depth(range = c(3, 6)),
+  learn_rate(range = c(-3, -1)),
+  loss_reduction(range = c(-3, 0))
+)
+
+set.seed(42)
+xgb_bayes_results <- tune_bayes(
+  xgb_tune_wf,
+  resamples = xgb_resamples,
+  param_info = xgb_param_set,
+  initial = 6,
+  iter = 4,
+  metrics = metric_set(roc_auc),
+  control = control_bayes(verbose = TRUE, save_pred = TRUE)
+)
+
+best_params <- select_best(xgb_bayes_results, metric ="roc_auc")
+print(best_params)
+
+xgb_final_wf  <- finalize_workflow(xgb_tune_wf, best_params)
+xgb_final_fit <- fit(xgb_final_wf, data = train_df)
+
+xgb_tuned_results <- evaluate_model(xgb_final_fit, test_df, "XGBoost (Tuned — Megan)")
+
+stopCluster(cl)
+registerDoSEQ()
+
+print(xgb_tuned_results$metrics)
+print(xgb_tuned_results$conf_mat)
+plot_confusion_matrix(xgb_tuned_results$conf_mat, "XGBoost (Tuned — Megan)")
+
+##############################################
+# 10C. Megan — Feature Importance for Tuned XGBoost
+##############################################
+recipe_prepped_tuned <- prep(recipe_base)
+xgb_matrix_tuned <- bake(recipe_prepped_tuned, new_data = train_df, all_predictors(), composition = "matrix")
+
+xgb_tuned_importance_tbl <- xgboost::xgb.importance(
+  feature_names = colnames(xgb_matrix_tuned),
+  model = extract_fit_engine(xgb_final_fit)
+)
+
+xgb_tuned_plot <- ggplot(xgb_tuned_importance_tbl, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  labs(title = "Tuned XGBoost Feature Importance – IoT_Garage_Door", x = "Feature", y = "Gain") +
+  theme_minimal(base_size = 14)
+
+print(xgb_tuned_plot)
+
+##############################################
+# 10D. Cierra Christian — Tuned Random Forest (Grid Search)
+##############################################
+rf_tune_spec <- rand_forest(
+  mode  = "classification",
+  trees = tune(),
+  mtry  = tune(),
+  min_n = tune()
+) %>%
+  set_engine(
+    "ranger",
+    probability = TRUE,
+    importance   = "impurity"
+  )
+
+rf_tune_wf <- workflow() %>%
+  add_model(rf_tune_spec) %>%
+  add_recipe(recipe_base)
+
+set.seed(42)
+rf_resamples <- vfold_cv(train_df, v = 3, strata = label)
+
+rf_param_set <- parameters(
+  trees(range = c(200L, 800L)),
+  mtry(range  = c(2L, 10L)),
+  min_n(range = c(2L, 10L))
+)
+
+rf_tune_results <- tune_grid(
+  rf_tune_wf,
+  resamples  = rf_resamples,
+  grid       = 15,
+  metrics    = metric_set(roc_auc),
+  param_info = rf_param_set
+)
+
+best_rf_params <- select_best(rf_tune_results, metric = "roc_auc")
+cat("\n=== Best Tuned RF Parameters (ROC AUC) – Garage Door (Cierra) ===\n")
+print(best_rf_params)
+
+rf_final_wf  <- finalize_workflow(rf_tune_wf, best_rf_params)
+rf_tuned_fit <- fit(rf_final_wf, data = train_df)
+
+rf_tuned_results <- evaluate_model(rf_tuned_fit, test_df, "Random Forest (Tuned — Cierra)")
+
+print(rf_tuned_results$metrics)
+print(rf_tuned_results$conf_mat)
+plot_confusion_matrix(rf_tuned_results$conf_mat, "Random Forest (Tuned — Garage Door — Cierra)")
+
+##############################################
+# 10E. Cierra — Tuned Random Forest Feature Importance & ROC
+##############################################
+rf_tuned_engine <- extract_fit_engine(rf_tuned_fit)
+
+rf_tuned_importance_tbl <- enframe(
+  rf_tuned_engine$variable.importance,
+  name  = "Feature",
+  value = "Importance"
+) %>%
+  arrange(desc(Importance))
+
+ggplot(rf_tuned_importance_tbl,
+       aes(x = reorder(Feature, Importance), y = Importance)) +
   geom_col() +
   coord_flip() +
-  labs(title = "MLP vs Random Forest — Macro F1", y = "Macro F1 Score") +
-  theme(legend.position = "none")
+  labs(
+    title = "Tuned Random Forest Feature Importance – IoT_Garage_Door",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal(base_size = 14)
+
+rf_roc_tuned_df <- rf_tuned_results$pred %>%
+  roc_curve(truth = label, .pred_1)
+
+autoplot(rf_roc_tuned_df) +
+  ggtitle("ROC Curve – Tuned Random Forest (IoT_Garage_Door)") +
+  theme_minimal(base_size = 14)
+
+##############################################
+# 11. FINAL COMPARISON (Baseline vs Tuned per person)
+##############################################
+get_metrics_summary <- function(results_obj, model_name) {
+  tibble(
+    model     = model_name,
+    accuracy  = accuracy(results_obj$pred, truth = label, estimate = .pred_class)[[".estimate"]],
+    precision = precision(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    recall    = recall(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    f1        = f_meas(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    roc_auc   = roc_auc(results_obj$pred, truth = label, .pred_1)[[".estimate"]]
+  )
+}
+
+garage_door_models_metrics <- bind_rows(
+  get_metrics_summary(knn_results,       "kNN Baseline (Gary)"),
+  get_metrics_summary(knn_tuned_results, "kNN Tuned (Gary)"),
+  get_metrics_summary(xgb_results,       "XGBoost Baseline (Megan)"),
+  get_metrics_summary(xgb_tuned_results, "XGBoost Tuned (Megan)"),
+  get_metrics_summary(rf_results,        "Random Forest Baseline (Cierra)"),
+  get_metrics_summary(rf_tuned_results,  "Random Forest Tuned (Cierra)")
+)
+
+cat("\n=== Garage Door – Baseline vs Tuned (One Per Person) ===\n")
+print(garage_door_models_metrics)
+
+##############################################
+# END OF PIPELINE
+##############################################
+```
+
+```
+
+---
+
+# ❄️ DATASET 2: FRIDGE
+
+### File
+
+`IoT_Fridge.csv`
+
+### Device-Specific Feature
+
+* `temp_condition` (categorical)
+
+---
+
+### 📄 Fridge Pipeline Code
+
+```r
+##############################################
+# TON_IoT Fridge Dataset - ML Pipeline
+# Group 2: Cierra Christian, Megan Geer, Gary Mullings
+# Ownership: Gary = kNN | Cierra = Random Forest | Megan = XGBoost
+##############################################
+
+##############################################
+# Libraries
+##############################################
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(hms)
+library(janitor)
+library(kknn)
+library(ranger)
+library(xgboost)
+library(themis)
+library(finetune)
+library(doParallel)
+set.seed(42)
+
+##############################################
+# 1. Load Dataset
+##############################################
+df_full <- read_csv("C:/Users/germe/OneDrive/Documents/R Code/IoT_Fridge.csv",
+                    show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(
+    date = as.Date(date, format = "%d-%b-%y"),
+    day_of_week = wday(date),
+    day_of_month = mday(date),
+    is_weekend = if_else(day_of_week %in% c(1, 7), 1, 0),
+    hour = hour(time),
+    minute = minute(time),
+    second = second(time),
+    temp_condition = as.factor(temp_condition),
+    label = factor(label, levels = c("1", "0"))
+  ) %>%
+  select(-date, -time, -type)
+
+##############################################
+# 1B. SAMPLE THE DATASET (STRATIFIED)
+##############################################
+df <- df_full %>%
+  group_by(label) %>%
+  sample_frac(0.15) %>%      # 15% of each class
+  ungroup()
+
+cat("Sampled rows:", nrow(df), "\n")
+table(df$label)
+
+##############################################
+# 2. Train/Test Split
+##############################################
+split <- initial_split(df, prop = 0.80, strata = label)
+train_df <- training(split)
+test_df  <- testing(split)
+
+##############################################
+# 3. Preprocessing Recipe (shared across models)
+##############################################
+recipe_base <- recipe(label ~ ., data = train_df) %>%
+  step_zv(all_predictors()) %>%
+  step_impute_median(all_numeric()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_smote(label)
+
+##############################################
+# 4. BASELINE MODELS (kNN + RF + XGB)
+##############################################
+
+# ---------------------------
+# Gary Mullings — kNN (Baseline)
+# ---------------------------
+knn_spec <- nearest_neighbor(
+  mode = "classification",
+  neighbors = 5,
+  weight_func = "rectangular",
+  dist_power = 2
+) %>% 
+  set_engine("kknn")
+
+# ---------------------------
+# Cierra Christian — Random Forest (Baseline)
+# ---------------------------
+rf_spec <- rand_forest(
+  mode = "classification",
+  trees = 500
+) %>% 
+  set_engine("ranger", probability = TRUE)
+
+# ---------------------------
+# Megan Geer — XGBoost (Baseline)
+# ---------------------------
+xgb_spec <- boost_tree(
+  mode = "classification",
+  trees = 200,
+  tree_depth = 6,
+  learn_rate = 0.1,
+  loss_reduction = 0.01
+) %>% set_engine("xgboost")
+
+##############################################
+# 5. BASELINE WORKFLOWS + FITS
+##############################################
+knn_wf <- workflow() %>% add_model(knn_spec) %>% add_recipe(recipe_base)
+rf_wf  <- workflow() %>% add_model(rf_spec)  %>% add_recipe(recipe_base)
+xgb_wf <- workflow() %>% add_model(xgb_spec) %>% add_recipe(recipe_base)
+
+knn_fit <- fit(knn_wf, data = train_df)
+rf_fit  <- fit(rf_wf,  data = train_df)
+xgb_fit <- fit(xgb_wf, data = train_df)
+
+##############################################
+# 6. Megan — Feature Importance for Original XGBoost
+##############################################
+recipe_prepped <- prep(recipe_base)
+xgb_matrix <- bake(recipe_prepped, new_data = train_df, all_predictors(), composition = "matrix")
+xgb_engine <- extract_fit_engine(xgb_fit)
+xgb_importance_tbl <- xgboost::xgb.importance(
+  feature_names = colnames(xgb_matrix),
+  model = xgb_engine
+)
+
+xgb_importance_plot <- ggplot(xgb_importance_tbl, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_col(fill = "steelblue") +
+  coord_flip() +
+  labs(title = "Original XGBoost Feature Importance – IoT_Fridge", x = "Feature", y = "Gain") +
+  theme_minimal(base_size = 14)
+print(xgb_importance_plot)
+
+##############################################
+# 7. Evaluation Helpers (shared)
+##############################################
+evaluate_model <- function(model_fit, test_data, model_name) {
+  
+  pred_df <- bind_cols(
+    predict(model_fit, test_data),
+    predict(model_fit, test_data, type = "prob"),
+    test_data
+  )
+  
+  metrics_tbl <- pred_df %>% metrics(truth = label, estimate = .pred_class)
+  roc_auc_tbl <- pred_df %>% roc_auc(truth = label, .pred_1)
+  pr_auc_tbl  <- pred_df %>% pr_auc(truth = label, .pred_1)
+  f1_tbl      <- pred_df %>% f_meas(truth = label, estimate = .pred_class)
+  cm          <- pred_df %>% conf_mat(truth = label, estimate = .pred_class)
+  
+  list(
+    metrics  = bind_rows(metrics_tbl, roc_auc_tbl, pr_auc_tbl, f1_tbl),
+    conf_mat = cm,
+    pred     = pred_df
+  )
+}
+
+plot_confusion_matrix <- function(conf_mat_obj, model_name) {
+  
+  cm_df <- as.data.frame(conf_mat_obj$table)
+  colnames(cm_df) <- c("Truth", "Prediction", "Count")
+  
+  cm_df$Label <- NA
+  cm_df$Label[cm_df$Truth == "1" & cm_df$Prediction == "1"] <- "True Positive"
+  cm_df$Label[cm_df$Truth == "0" & cm_df$Prediction == "0"] <- "True Negative"
+  cm_df$Label[cm_df$Truth == "0" & cm_df$Prediction == "1"] <- "False Positive"
+  cm_df$Label[cm_df$Truth == "1" & cm_df$Prediction == "0"] <- "False Negative"
+  
+  cm_df$Percent <- round(cm_df$Count / sum(cm_df$Count) * 100, 2)
+  
+  ggplot(cm_df, aes(Prediction, Truth, fill = Count)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = paste0(Label, "\n", Count, "\n(", Percent, "%)")),
+              fontface = "bold", size = 4) +
+    scale_fill_gradient(low = "#F7FBFF", high = "orange") +
+    labs(
+      title = paste(model_name, "— Confusion Matrix"),
+      x = "Predicted Class",
+      y = "Actual Class",
+      fill = "Count"
+    ) +
+    theme_minimal(base_size = 13)
+}
+
+##############################################
+# 8. BASELINE RESULTS (All 3 models)
+##############################################
+knn_results <- evaluate_model(knn_fit, test_df, "kNN (Baseline — Gary)")
+rf_results  <- evaluate_model(rf_fit,  test_df, "Random Forest (Baseline — Cierra)")
+xgb_results <- evaluate_model(xgb_fit, test_df, "XGBoost (Baseline — Megan)")
+
+print(knn_results$metrics); print(knn_results$conf_mat)
+print(rf_results$metrics);  print(rf_results$conf_mat)
+print(xgb_results$metrics); print(xgb_results$conf_mat)
+
+plot_confusion_matrix(knn_results$conf_mat, "kNN (Baseline — Gary)")
+plot_confusion_matrix(rf_results$conf_mat,  "Random Forest (Baseline — Cierra)")
+plot_confusion_matrix(xgb_results$conf_mat, "XGBoost (Baseline — Megan)")
+
+##############################################
+# 9. ROC CURVES (Baseline comparison)
+##############################################
+roc_all <- bind_rows(
+  knn_results$pred %>% 
+    select(label, .pred_1) %>% 
+    rename(truth = label, prob = .pred_1) %>%
+    mutate(model = "kNN (Gary)"),
+  
+  rf_results$pred %>% 
+    select(label, .pred_1) %>% 
+    rename(truth = label, prob = .pred_1) %>%
+    mutate(model = "Random Forest (Cierra)"),
+  
+  xgb_results$pred %>% 
+    select(label, .pred_1) %>% 
+    rename(truth = label, prob = .pred_1) %>% 
+    mutate(model = "XGBoost (Megan)")
+)
+
+roc_curve_df <- roc_all %>%
+  group_by(model) %>%
+  roc_curve(truth, prob)
+
+ggplot(roc_curve_df, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line(size = 1.3) +
+  geom_abline(lty = 3) +
+  labs(
+    title = "ROC Curve – Baseline Model Comparison (Fridge)",
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) +
+  theme_minimal(base_size = 14)
+
+roc_all %>% group_by(model) %>% roc_auc(truth, prob)
+
+#####################################################################
+# 10. TUNED MODELS (ONE PER PERSON)
+#####################################################################
+
+##############################################
+# 10A. Gary Mullings — Tuned kNN (Tune k)
+##############################################
+knn_tune_spec <- nearest_neighbor(
+  mode        = "classification",
+  neighbors   = tune(),
+  weight_func = "rectangular",
+  dist_power  = 2
+) %>% set_engine("kknn")
+
+knn_tune_wf <- workflow() %>%
+  add_model(knn_tune_spec) %>%
+  add_recipe(recipe_base)
+
+folds   <- vfold_cv(train_df, v = 5, strata = label)
+k_grid  <- tibble(neighbors = seq(1, 31, by = 2))
+metric_k <- metric_set(accuracy, f_meas)
+
+knn_tuned <- knn_tune_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid      = k_grid,
+    metrics   = metric_k
+  )
+
+knn_tune_results <- knn_tuned %>% collect_metrics()
+
+best_k <- knn_tune_results %>%
+  dplyr::filter(.metric == "accuracy") %>%
+  dplyr::arrange(desc(mean)) %>%
+  dplyr::slice(1) %>%
+  dplyr::pull(neighbors)
+
+cat("Best k (Gary) based on CV accuracy:", best_k, "\n")
+
+knn_spec_final <- nearest_neighbor(
+  mode        = "classification",
+  neighbors   = best_k,
+  weight_func = "rectangular",
+  dist_power  = 2
+) %>% set_engine("kknn")
+
+knn_final_wf  <- workflow() %>% add_model(knn_spec_final) %>% add_recipe(recipe_base)
+knn_final_fit <- fit(knn_final_wf, data = train_df)
+
+knn_tuned_results <- evaluate_model(knn_final_fit, test_df, "kNN (Tuned — Gary)")
+print(knn_tuned_results$metrics)
+print(knn_tuned_results$conf_mat)
+plot_confusion_matrix(knn_tuned_results$conf_mat, "kNN (Tuned — Gary)")
+
+##############################################
+# 10B. Megan Geer — Tuned XGBoost (Bayesian)
+##############################################
+cl <- makeCluster(parallel::detectCores() - 1)
+registerDoParallel(cl)
+
+xgb_tune_wf <- workflow() %>%
+  add_model(
+    boost_tree(
+      mode = "classification",
+      trees = tune(),
+      tree_depth = tune(),
+      learn_rate = tune(),
+      loss_reduction = tune()
+    ) %>% set_engine("xgboost")
+  ) %>%
+  add_recipe(recipe_base)
+
+xgb_resamples <- vfold_cv(train_df, v = 3, strata = label)
+
+xgb_param_set <- parameters(
+  trees(range = c(50, 150)),
+  tree_depth(range = c(3, 6)),
+  learn_rate(range = c(-3, -1)),
+  loss_reduction(range = c(-3, 0))
+)
+
+set.seed(42)
+xgb_bayes_results <- tune_bayes(
+  xgb_tune_wf,
+  resamples = xgb_resamples,
+  param_info = xgb_param_set,
+  initial = 6,
+  iter = 4,
+  metrics = metric_set(roc_auc),
+  control = control_bayes(verbose = TRUE, save_pred = TRUE)
+)
+
+best_params <- select_best(xgb_bayes_results, metric ="roc_auc")
+print(best_params)
+
+xgb_final_wf  <- finalize_workflow(xgb_tune_wf, best_params)
+xgb_final_fit <- fit(xgb_final_wf, data = train_df)
+
+xgb_tuned_results <- evaluate_model(xgb_final_fit, test_df, "XGBoost (Tuned — Megan)")
+
+stopCluster(cl)
+registerDoSEQ()
+
+print(xgb_tuned_results$metrics)
+print(xgb_tuned_results$conf_mat)
+plot_confusion_matrix(xgb_tuned_results$conf_mat, "XGBoost (Tuned — Megan)")
+
+##############################################
+# 10C. Megan — Feature Importance for Tuned XGBoost
+##############################################
+recipe_prepped_tuned <- prep(recipe_base)
+xgb_matrix_tuned <- bake(recipe_prepped_tuned, new_data = train_df, all_predictors(), composition = "matrix")
+
+xgb_tuned_importance_tbl <- xgboost::xgb.importance(
+  feature_names = colnames(xgb_matrix_tuned),
+  model = extract_fit_engine(xgb_final_fit)
+)
+
+xgb_tuned_plot <- ggplot(xgb_tuned_importance_tbl, aes(x = reorder(Feature, Gain), y = Gain)) +
+  geom_col(fill = "darkorange") +
+  coord_flip() +
+  labs(title = "Tuned XGBoost Feature Importance – IoT_Fridge", x = "Feature", y = "Gain") +
+  theme_minimal(base_size = 14)
+
+print(xgb_tuned_plot)
+
+##############################################
+# 10D. Cierra Christian — Tuned Random Forest (Grid Search)
+##############################################
+rf_tune_spec <- rand_forest(
+  mode  = "classification",
+  trees = tune(),
+  mtry  = tune(),
+  min_n = tune()
+) %>%
+  set_engine(
+    "ranger",
+    probability = TRUE,
+    importance   = "impurity"
+  )
+
+rf_tune_wf <- workflow() %>%
+  add_model(rf_tune_spec) %>%
+  add_recipe(recipe_base)
+
+set.seed(42)
+rf_resamples <- vfold_cv(train_df, v = 3, strata = label)
+
+rf_param_set <- parameters(
+  trees(range = c(200L, 800L)),
+  mtry(range  = c(2L, 10L)),
+  min_n(range = c(2L, 10L))
+)
+
+rf_tune_results <- tune_grid(
+  rf_tune_wf,
+  resamples  = rf_resamples,
+  grid       = 15,
+  metrics    = metric_set(roc_auc),
+  param_info = rf_param_set
+)
+
+best_rf_params <- select_best(rf_tune_results, metric = "roc_auc")
+cat("\n=== Best Tuned RF Parameters (ROC AUC) – Fridge (Cierra) ===\n")
+print(best_rf_params)
+
+rf_final_wf  <- finalize_workflow(rf_tune_wf, best_rf_params)
+rf_tuned_fit <- fit(rf_final_wf, data = train_df)
+
+rf_tuned_results <- evaluate_model(rf_tuned_fit, test_df, "Random Forest (Tuned — Cierra)")
+
+print(rf_tuned_results$metrics)
+print(rf_tuned_results$conf_mat)
+plot_confusion_matrix(rf_tuned_results$conf_mat, "Random Forest (Tuned — Fridge — Cierra)")
+
+##############################################
+# 10E. Cierra — Tuned Random Forest Feature Importance & ROC
+##############################################
+rf_tuned_engine <- extract_fit_engine(rf_tuned_fit)
+
+rf_tuned_importance_tbl <- enframe(
+  rf_tuned_engine$variable.importance,
+  name  = "Feature",
+  value = "Importance"
+) %>%
+  arrange(desc(Importance))
+
+ggplot(rf_tuned_importance_tbl,
+       aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_col() +
+  coord_flip() +
+  labs(
+    title = "Tuned Random Forest Feature Importance – IoT_Fridge",
+    x = "Feature",
+    y = "Importance"
+  ) +
+  theme_minimal(base_size = 14)
+
+rf_roc_tuned_df <- rf_tuned_results$pred %>%
+  roc_curve(truth = label, .pred_1)
+
+autoplot(rf_roc_tuned_df) +
+  ggtitle("ROC Curve – Tuned Random Forest (IoT_Fridge)") +
+  theme_minimal(base_size = 14)
+
+##############################################
+# 11. FINAL COMPARISON (Baseline vs Tuned per person)
+##############################################
+get_metrics_summary <- function(results_obj, model_name) {
+  tibble(
+    model     = model_name,
+    accuracy  = accuracy(results_obj$pred, truth = label, estimate = .pred_class)[[".estimate"]],
+    precision = precision(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    recall    = recall(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    f1        = f_meas(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    roc_auc   = roc_auc(results_obj$pred, truth = label, .pred_1)[[".estimate"]]
+  )
+}
+
+fridge_models_metrics <- bind_rows(
+  get_metrics_summary(knn_results,       "kNN Baseline (Gary)"),
+  get_metrics_summary(knn_tuned_results, "kNN Tuned (Gary)"),
+  get_metrics_summary(xgb_results,       "XGBoost Baseline (Megan)"),
+  get_metrics_summary(xgb_tuned_results, "XGBoost Tuned (Megan)"),
+  get_metrics_summary(rf_results,        "Random Forest Baseline (Cierra)"),
+  get_metrics_summary(rf_tuned_results,  "Random Forest Tuned (Cierra)")
+)
+
+cat("\n=== Fridge – Baseline vs Tuned (One Per Person) ===\n")
+print(fridge_models_metrics)
+
+##############################################
+# END OF PIPELINE
+##############################################
 ```
 
 
+---
 
+# 🌡️ DATASET 3: THERMOSTAT
 
+### File
 
+`IoT_Thermostat.csv`
+
+### Device-Specific Feature
+
+* `thermostat_status` (categorical)
 
 ---
 
+### 📄 Thermostat Pipeline Code
 
-# 🌱 Section 8 – Extra Exploration: MLP vs Random Forest on Iris
+```r
+```r
+##############################################
+# TON_IoT Thermostat Dataset - ML Pipeline
+# Group 2: Cierra Christian, Megan Geer, Gary Mullings
+##############################################
 
-For the exploration portion, we trained:
+##############################################
+# Libraries
+##############################################
+library(tidyverse)
+library(tidymodels)
+library(lubridate)
+library(hms)
+library(janitor)
+library(kknn)
+library(ranger)
+library(xgboost)
+library(themis)
+library(finetune)
+library(doParallel)
+set.seed(42)
 
-* A small **MLP** on the Iris dataset
-* A **Random Forest** classifier
+##############################################
+# 1. Load Dataset (Thermostat)
+##############################################
+df_full <- read_csv("C:/Users/germe/OneDrive/Documents/R Code/IoT_Thermostat.csv",
+                    show_col_types = FALSE) %>%
+  clean_names() %>%
+  mutate(
+    date = as.Date(date, format = "%d-%b-%y"),
+    day_of_week = wday(date),
+    day_of_month = mday(date),
+    is_weekend = if_else(day_of_week %in% c(1, 7), 1, 0),
+    hour = hour(time),
+    minute = minute(time),
+    second = second(time),
+    thermostat_status = as.factor(thermostat_status),
+    label = factor(label, levels = c("1", "0"))
+  ) %>%
+  select(-date, -time, -type)
 
-Results:
+##############################################
+# 1B. SAMPLE THE DATASET (STRATIFIED)
+##############################################
+df <- df_full %>%
+  group_by(label) %>%
+  sample_frac(0.15) %>%      # 15% of each class
+  ungroup()
 
-* The MLP learned reasonably well but showed signs of **overfitting** (validation loss stopped improving early).
-* Random Forest achieved **higher accuracy and Macro-F1**, especially on the tricky Virginica vs Versicolor boundary.
+cat("Sampled rows:", nrow(df), "\n")
+table(df$label)
 
-Takeaway:
-For **small, tabular datasets**, classical models like Random Forest often outperform deep learning, which typically needs **more data + more tuning** to shine.
+##############################################
+# 2. Train/Test Split
+##############################################
+split <- initial_split(df, prop = 0.80, strata = label)
+train_df <- training(split)
+test_df  <- testing(split)
+
+##############################################
+# 3. Preprocessing Recipe (shared across models)
+##############################################
+recipe_base <- recipe(label ~ ., data = train_df) %>%
+  step_zv(all_predictors()) %>%
+  step_impute_median(all_numeric()) %>%
+  step_unknown(all_nominal_predictors()) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_normalize(all_numeric_predictors()) %>%
+  step_smote(label)
+
+##############################################
+# 4. BASELINE MODELS (kNN + RF + XGB)
+##############################################
+
+# ---------------------------
+# Gary Mullings — kNN (baseline spec used before tuning)
+# ---------------------------
+knn_spec <- nearest_neighbor(
+  mode = "classification",
+  neighbors = 5,
+  weight_func = "rectangular",
+  dist_power = 2
+) %>% 
+  set_engine("kknn")
+
+# ---------------------------
+# Cierra Christian — Random Forest (baseline)
+# ---------------------------
+rf_spec <- rand_forest(
+  mode  = "classification",
+  trees = 500
+) %>% 
+  set_engine("ranger", probability = TRUE)
+
+# ---------------------------
+# Megan Geer — XGBoost (baseline)
+# ---------------------------
+xgb_spec <- boost_tree(
+  mode = "classification",
+  trees = 200,
+  tree_depth = 6,
+  learn_rate = 0.1,
+  loss_reduction = 0.01
+) %>% set_engine("xgboost")
+
+##############################################
+# 5. BASELINE WORKFLOWS + FITS
+##############################################
+knn_wf <- workflow() %>% add_model(knn_spec) %>% add_recipe(recipe_base)
+rf_wf  <- workflow() %>% add_model(rf_spec)  %>% add_recipe(recipe_base)
+xgb_wf <- workflow() %>% add_model(xgb_spec) %>% add_recipe(recipe_base)
+
+knn_fit <- fit(knn_wf, data = train_df)
+rf_fit  <- fit(rf_wf,  data = train_df)
+xgb_fit <- fit(xgb_wf, data = train_df)
+
+##############################################
+# 6. EVALUATION HELPERS (shared)
+##############################################
+evaluate_model <- function(model_fit, test_data, model_name) {
+  
+  pred_df <- bind_cols(
+    predict(model_fit, test_data),
+    predict(model_fit, test_data, type = "prob"),
+    test_data
+  )
+  
+  metrics_tbl <- pred_df %>% metrics(truth = label, estimate = .pred_class)
+  roc_auc_tbl <- pred_df %>% roc_auc(truth = label, .pred_1)
+  pr_auc_tbl  <- pred_df %>% pr_auc(truth = label, .pred_1)
+  f1_tbl      <- pred_df %>% f_meas(truth = label, estimate = .pred_class)
+  cm          <- pred_df %>% conf_mat(truth = label, estimate = .pred_class)
+  
+  list(
+    metrics  = bind_rows(metrics_tbl, roc_auc_tbl, pr_auc_tbl, f1_tbl),
+    conf_mat = cm,
+    pred     = pred_df
+  )
+}
+
+plot_confusion_matrix <- function(conf_mat_obj, model_name) {
+  
+  cm_df <- as.data.frame(conf_mat_obj$table)
+  colnames(cm_df) <- c("Truth", "Prediction", "Count")
+  
+  cm_df$Label <- NA
+  cm_df$Label[cm_df$Truth == "1" & cm_df$Prediction == "1"] <- "True Positive"
+  cm_df$Label[cm_df$Truth == "0" & cm_df$Prediction == "0"] <- "True Negative"
+  cm_df$Label[cm_df$Truth == "0" & cm_df$Prediction == "1"] <- "False Positive"
+  cm_df$Label[cm_df$Truth == "1" & cm_df$Prediction == "0"] <- "False Negative"
+  
+  cm_df$Percent <- round(cm_df$Count / sum(cm_df$Count) * 100, 2)
+  
+  ggplot(cm_df, aes(Prediction, Truth, fill = Count)) +
+    geom_tile(color = "white") +
+    geom_text(aes(label = paste0(Label, "\n", Count, "\n(", Percent, "%)")),
+              fontface = "bold", size = 4) +
+    scale_fill_gradient(low = "#F7FBFF", high = "orange") +
+    labs(
+      title = paste(model_name, "— Confusion Matrix"),
+      x = "Predicted Class",
+      y = "Actual Class",
+      fill = "Count"
+    ) +
+    theme_minimal(base_size = 13)
+}
+
+##############################################
+# 7. BASELINE RESULTS (All 3 models)
+##############################################
+knn_results <- evaluate_model(knn_fit, test_df, "kNN (Baseline — Gary)")
+rf_results  <- evaluate_model(rf_fit,  test_df, "Random Forest (Baseline — Cierra)")
+xgb_results <- evaluate_model(xgb_fit, test_df, "XGBoost (Baseline — Megan)")
+
+print(knn_results$metrics); print(knn_results$conf_mat)
+print(rf_results$metrics);  print(rf_results$conf_mat)
+print(xgb_results$metrics); print(xgb_results$conf_mat)
+
+plot_confusion_matrix(knn_results$conf_mat, "kNN (Baseline — Gary)")
+plot_confusion_matrix(rf_results$conf_mat,  "Random Forest (Baseline — Cierra)")
+plot_confusion_matrix(xgb_results$conf_mat, "XGBoost (Baseline — Megan)")
+
+##############################################
+# 8. ROC CURVES (Baseline comparison)
+##############################################
+roc_all <- bind_rows(
+  knn_results$pred %>% select(label, .pred_1) %>% rename(truth = label, prob = .pred_1) %>% mutate(model = "kNN (Gary)"),
+  rf_results$pred  %>% select(label, .pred_1) %>% rename(truth = label, prob = .pred_1) %>% mutate(model = "Random Forest (Cierra)"),
+  xgb_results$pred %>% select(label, .pred_1) %>% rename(truth = label, prob = .pred_1) %>% mutate(model = "XGBoost (Megan)")
+)
+
+roc_curve_df <- roc_all %>%
+  group_by(model) %>%
+  roc_curve(truth, prob)
+
+ggplot(roc_curve_df, aes(x = 1 - specificity, y = sensitivity, color = model)) +
+  geom_line(size = 1.3) +
+  geom_abline(lty = 3) +
+  labs(
+    title = "ROC Curve – Baseline Model Comparison (Thermostat)",
+    x = "False Positive Rate",
+    y = "True Positive Rate"
+  ) +
+  theme_minimal(base_size = 14)
+
+roc_all %>% group_by(model) %>% roc_auc(truth, prob)
+
+#####################################################################
+# 9. TUNED MODELS (ONE PER PERSON)
+#####################################################################
+
+##############################################
+# 9A. Gary Mullings — Tuned kNN (Tune k)
+##############################################
+knn_tune_spec <- nearest_neighbor(
+  mode        = "classification",
+  neighbors   = tune(),
+  weight_func = "rectangular",
+  dist_power  = 2
+) %>% 
+  set_engine("kknn")
+
+knn_tune_wf <- workflow() %>% add_model(knn_tune_spec) %>% add_recipe(recipe_base)
+
+folds   <- vfold_cv(train_df, v = 5, strata = label)
+k_grid  <- tibble(neighbors = seq(1, 31, by = 2))
+metric_k <- metric_set(accuracy, f_meas)
+
+knn_tuned <- knn_tune_wf %>%
+  tune_grid(
+    resamples = folds,
+    grid      = k_grid,
+    metrics   = metric_k
+  )
+
+knn_tune_results <- knn_tuned %>% collect_metrics()
+
+best_k <- knn_tune_results %>%
+  dplyr::filter(.metric == "accuracy") %>%
+  dplyr::arrange(desc(mean)) %>%
+  dplyr::slice(1) %>%
+  dplyr::pull(neighbors)
+
+cat("Best k (Gary) based on CV accuracy:", best_k, "\n")
+
+knn_spec_final <- nearest_neighbor(
+  mode        = "classification",
+  neighbors   = best_k,
+  weight_func = "rectangular",
+  dist_power  = 2
+) %>% 
+  set_engine("kknn")
+
+knn_final_wf  <- workflow() %>% add_model(knn_spec_final) %>% add_recipe(recipe_base)
+knn_final_fit <- fit(knn_final_wf, data = train_df)
+knn_tuned_results <- evaluate_model(knn_final_fit, test_df, "kNN (Tuned — Gary)")
+
+print(knn_tuned_results$metrics)
+print(knn_tuned_results$conf_mat)
+plot_confusion_matrix(knn_tuned_results$conf_mat, "kNN (Tuned — Gary)")
+
+##############################################
+# 9B. Megan Geer — Tuned XGBoost (Bayesian)
+##############################################
+cl <- makeCluster(parallel::detectCores() - 1)
+registerDoParallel(cl)
+
+xgb_tune_wf <- workflow() %>%
+  add_model(
+    boost_tree(
+      mode = "classification",
+      trees = tune(),
+      tree_depth = tune(),
+      learn_rate = tune(),
+      loss_reduction = tune()
+    ) %>% set_engine("xgboost")
+  ) %>%
+  add_recipe(recipe_base)
+
+xgb_resamples <- vfold_cv(train_df, v = 3, strata = label)
+
+xgb_param_set <- parameters(
+  trees(range = c(50, 150)),
+  tree_depth(range = c(3, 6)),
+  learn_rate(range = c(-3, -1)),
+  loss_reduction(range = c(-3, 0))
+)
+
+set.seed(42)
+xgb_bayes_results <- tune_bayes(
+  xgb_tune_wf,
+  resamples = xgb_resamples,
+  param_info = xgb_param_set,
+  initial = 6,
+  iter = 4,
+  metrics = metric_set(roc_auc),
+  control = control_bayes(verbose = TRUE, save_pred = TRUE)
+)
+
+best_params <- select_best(xgb_bayes_results, metric ="roc_auc")
+print(best_params)
+
+xgb_final_wf  <- finalize_workflow(xgb_tune_wf, best_params)
+xgb_final_fit <- fit(xgb_final_wf, data = train_df)
+
+xgb_tuned_results <- evaluate_model(xgb_final_fit, test_df, "XGBoost (Tuned — Megan)")
+
+stopCluster(cl)
+registerDoSEQ()
+
+print(xgb_tuned_results$metrics)
+print(xgb_tuned_results$conf_mat)
+plot_confusion_matrix(xgb_tuned_results$conf_mat, "XGBoost (Tuned — Megan)")
+
+##############################################
+# 9C. Cierra Christian — Tuned Random Forest (Grid Search)
+##############################################
+rf_tune_spec <- rand_forest(
+  mode  = "classification",
+  trees = tune(),
+  mtry  = tune(),
+  min_n = tune()
+) %>%
+  set_engine(
+    "ranger",
+    probability = TRUE,
+    importance   = "impurity"
+  )
+
+rf_tune_wf <- workflow() %>%
+  add_model(rf_tune_spec) %>%
+  add_recipe(recipe_base)
+
+set.seed(42)
+rf_resamples <- vfold_cv(train_df, v = 3, strata = label)
+
+rf_param_set <- parameters(
+  trees(range = c(200L, 800L)),
+  mtry(range  = c(2L, 10L)),
+  min_n(range = c(2L, 10L))
+)
+
+rf_tune_results <- tune_grid(
+  rf_tune_wf,
+  resamples  = rf_resamples,
+  grid       = 15,
+  metrics    = metric_set(roc_auc),
+  param_info = rf_param_set
+)
+
+best_rf_params <- select_best(rf_tune_results, metric = "roc_auc")
+cat("\n=== Best Tuned RF Parameters (Cierra) ===\n")
+print(best_rf_params)
+
+rf_final_wf  <- finalize_workflow(rf_tune_wf, best_rf_params)
+rf_tuned_fit <- fit(rf_final_wf, data = train_df)
+
+rf_tuned_results <- evaluate_model(rf_tuned_fit, test_df, "Random Forest (Tuned — Cierra)")
+
+print(rf_tuned_results$metrics)
+print(rf_tuned_results$conf_mat)
+plot_confusion_matrix(rf_tuned_results$conf_mat, "Random Forest (Tuned — Cierra)")
+
+##############################################
+# 10. FINAL COMPARISON (Baseline vs Tuned per person)
+##############################################
+# NOTE: This section keeps your same metric logic style.
+# It reads clean for the report/presentation.
+
+get_metrics_summary <- function(results_obj, model_name) {
+  tibble(
+    model     = model_name,
+    accuracy  = accuracy(results_obj$pred, truth = label, estimate = .pred_class)[[".estimate"]],
+    precision = precision(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    recall    = recall(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    f1        = f_meas(results_obj$pred, truth = label, estimate = .pred_class, event_level = "second")[[".estimate"]],
+    roc_auc   = roc_auc(results_obj$pred, truth = label, .pred_1)[[".estimate"]]
+  )
+}
+
+Thermostat_models_metrics <- bind_rows(
+  get_metrics_summary(knn_results,       "kNN Baseline (Gary)"),
+  get_metrics_summary(knn_tuned_results, "kNN Tuned (Gary)"),
+  get_metrics_summary(xgb_results,       "XGBoost Baseline (Megan)"),
+  get_metrics_summary(xgb_tuned_results, "XGBoost Tuned (Megan)"),
+  get_metrics_summary(rf_results,        "Random Forest Baseline (Cierra)"),
+  get_metrics_summary(rf_tuned_results,  "Random Forest Tuned (Cierra)")
+)
+
+cat("\n=== Thermostat – Baseline vs Tuned (One Per Person) ===\n")
+print(Thermostat_models_metrics)
+
+##############################################
+# END OF PIPELINE
+##############################################
+```
+
+```
 
 ---
 
-## 📎 Files & Organization
+## 🤖 Models (Shared Across All Datasets)
 
-Suggested repo layout:
+```r
+# Gary — kNN
+knn_spec <- nearest_neighbor(
+  mode = "classification",
+  neighbors = 5,
+  weight_func = "rectangular",
+  dist_power = 2
+) %>% set_engine("kknn")
+
+# Cierra — Random Forest
+rf_spec <- rand_forest(
+  mode = "classification",
+  trees = 500
+) %>% set_engine("ranger", probability = TRUE)
+
+# Megan — XGBoost
+xgb_spec <- boost_tree(
+  mode = "classification",
+  trees = 200,
+  tree_depth = 6,
+  learn_rate = 0.1,
+  loss_reduction = 0.01
+) %>% set_engine("xgboost")
+```
+
+---
+
+## 📈 Evaluation Metrics
+
+All models are evaluated using:
+
+* Accuracy
+* Precision
+* Recall
+* F1-Score
+* ROC-AUC
+* PR-AUC
+* Confusion Matrix
+* ROC Curves
+
+---
+
+## 🔑 Key Findings (Summary)
+
+* **Tuned XGBoost** achieved the highest ROC-AUC across devices
+* **Random Forest** provided strong interpretability with competitive accuracy
+* **kNN** benefited significantly from tuning but remained sensitive to noise
+* Shared preprocessing ensured fair, apples-to-apples comparison
+
+---
+
+## 📂 Repository Structure
 
 ```text
-lab5-unsw-nb15-mlp/
-├── README.md               # This document 🎉
-├── data/
-│   ├── UNSW_NB15_training-set.csv
-│   └── UNSW_NB15_testing-set.csv
-├── R/
-│   ├── lab5_unsw_nb15_mlp.R      # Main UNSW lab script
-│   └── iris_mlp_vs_rf.R          # Exploration script (Iris dataset)
-└── plots/
-    ├── baseline_confusion.png
-    ├── tuned_confusion.png
-    └── macro_f1_comparison.png
+.
+├── Garage_Door_Pipeline.R
+├── Fridge_Pipeline.R
+├── Thermostat_Pipeline.R
+└── README.md
 ```
 
 ---
 
-## 🎯 Final Thoughts
+## 🎓 Academic Context
 
-This lab walks through a **full deep learning workflow** for intrusion detection:
+This project demonstrates:
 
-* From messy CSVs → clean, scaled, one-hot encoded features
-* From basic MLP → tuned model with BN, Dropout, and EarlyStopping
-* From simple Accuracy → more honest metrics like Macro-F1
+* Multi-device ML experimentation
+* Proper experimental control
+* Clear ownership attribution
+* Interpretable security analytics
 
-Most importantly, it shows that **how you prepare data and design your evaluation** matters just as much as the model architecture itself.
+---
 
+Just tell me — this is already **portfolio-ready** ✅
